@@ -290,6 +290,7 @@ impl SegmentSet {
                 parts.push(0..buf.len());
             }
 
+            let mut line_number = 1;
             let mut promises = Vec::new();
             for range in parts {
                 let partbuf = if range == (0..buf.len()) {
@@ -301,8 +302,10 @@ impl SegmentSet {
                 let srcinfo = Arc::new(SourceInfo {
                     name: path.clone(),
                     text: buf.clone(),
-                    span: Span::new(range.start, range.end),
+                    span: Span::new(line_number, range.start, range.end),
                 });
+
+                line_number += bytecount::count(&buf[range.start..range.end], b'\n');
 
                 let cachekey = LongBuf(partbuf.clone());
 

@@ -20,6 +20,7 @@ log = "0.4.14"
 # Dependencies for standalone executable, not needed for a library
 clap = "2.33"
 simple_logger = "1.13"
+bytecount = "0.6.2"
 
 # Optional dependencies
 dot-writer = { version = "0.1.2", optional = true }

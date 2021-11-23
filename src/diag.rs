@@ -48,7 +48,7 @@ pub enum DiagnosticClass {
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[allow(missing_docs)]
 pub enum Diagnostic {
-    BadCharacter(usize, u8),
+    BadCharacter(usize, usize, u8),
     BadCommentEnd(Span, Span),
     BadExplicitLabel(Token),
     BadFloating,
@@ -225,11 +225,11 @@ fn annotate_diagnostic(
     };
 
     match *diag {
-        BadCharacter(span, byte) => {
+        BadCharacter(line_number, pos, byte) => {
             info.s = "Invalid character (byte value {byte}); Metamath source files are limited to \
                       US-ASCII with controls TAB, CR, LF, FF)";
             info.args.push(("byte", d(byte)));
-            ann(&mut info, Span::new(span, span + 1));
+            ann(&mut info, Span::new(line_number, pos, pos + 1));
         }
         BadCommentEnd(tok, opener) => {
             info.s = "$) sequence must be surrounded by whitespace to end a comment";

@@ -82,9 +82,9 @@ fn test_stref_v() {
     assert_eq!(vyz.label(), b"");
     assert_eq!(vyz.math_len(), 2);
     assert_eq!(vyz.proof_len(), 0);
-    assert_eq!(vx.math_span(0), Span::new(3, 4));
-    assert_eq!(vyz.span_full(), Span::new(10, 20));
-    assert_eq!(vyz.span(), Span::new(11, 20));
+    assert_eq!(vx.math_span(0), Span::new(1, 3, 4));
+    assert_eq!(vyz.span_full(), Span::new(1, 10, 20));
+    assert_eq!(vyz.span(), Span::new(1, 11, 20));
     let tli: Vec<_> = vyz.math_iter().map(TokenRef::index).collect();
     assert_eq!(tli, vec![0i32, 1i32]);
     let zz: Vec<Vec<u8>> = vyz.math_iter().map(|z| (&*z).to_owned()).collect();
@@ -106,10 +106,10 @@ parse_test!(test_valid_whitespace, b" \t\r\n\x0C", []);
 parse_test!(
     test_invalid_c0,
     b"$c\0X $.",
-    [(0, Diagnostic::BadCharacter(2, 0))]
+    [(0, Diagnostic::BadCharacter(1, 2, 0))]
 );
 parse_test!(
     test_invalid_del,
     b"$c X Y\x7F $.",
-    [(0, Diagnostic::BadCharacter(6, 0x7F))]
+    [(0, Diagnostic::BadCharacter(1, 6, 0x7F))]
 );

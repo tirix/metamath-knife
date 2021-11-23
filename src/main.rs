@@ -163,8 +163,8 @@ fn print_annotation(lc: &mut LineCache, ann: Notation) {
     let offs = (ann.span.start + ann.source.span.start) as usize;
     let (row, col) = lc.from_offset(&ann.source.text, offs);
     println!(
-        "{}:{}:{}:{:?}:{}{}",
-        ann.source.name, row, col, ann.level, ann.message, args
+        "{}:{}/{}:{}:{:?}:{}{}",
+        ann.source.name, row, ann.span.line_number, col, ann.level, ann.message, args
     );
 
     let line_end = LineCache::line_end(&ann.source.text, offs);

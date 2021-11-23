@@ -88,6 +88,8 @@ pub const NO_STATEMENT: StatementIndex = -1;
 /// null span used as a sentinel value by several functions.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct Span {
+    /// Line number where this span starts
+    pub line_number: usize,
     /// Index of first character of the range.
     pub start: FilePos,
     /// Index one past last character of the range.
@@ -97,19 +99,24 @@ pub struct Span {
 impl Span {
     /// Coercion from array index pairs.
     #[must_use]
-    pub const fn new(start: usize, end: usize) -> Span {
+    pub const fn new(line_number: usize, start: usize, end: usize) -> Span {
         Span {
+            line_number,
             start: start as FilePos,
             end: end as FilePos,
         }
     }
 
-    const fn new2(start: FilePos, end: FilePos) -> Span {
-        Span { start, end }
+    const fn new2(line_number: usize, start: FilePos, end: FilePos) -> Span {
+        Span {
+            line_number,
+            start,
+            end,
+        }
     }
 
     /// Returns the null span.
-    pub const NULL: Span = Span::new(0, 0);
+    pub const NULL: Span = Span::new(0, 0, 0);
 
     /// Checks for the null span, i.e. zero length at offset zero.
     #[must_use]
@@ -694,7 +701,11 @@ impl<'a> StatementRef<'a> {
     /// Does not include surrounding white space or comments, unlike `span_full()`.
     #[must_use]
     pub const fn span(&self) -> Span {
-        Span::new2(self.statement.label.start, self.span_full().end)
+        Span::new2(
+            self.statement.label.line_number,
+            self.statement.label.start,
+            self.span_full().end,
+        )
     }
 
     /// Count of symbols in this statement's math string.
@@ -847,6 +858,8 @@ struct Scanner<'a> {
     buffer: &'a [u8],
     /// Arc of text which can be linked into new Segments.
     buffer_ref: BufferRef,
+    /// Current line number
+    line_number: usize,
     /// Current parsing position; will generally point immediately after a
     /// token, at whitespace.
     position: FilePos,
@@ -948,7 +961,7 @@ impl<'a> Scanner<'a> {
         #[cold]
         fn badchar(slf: &mut Scanner<'_>, ix: usize) -> Span {
             let ch = slf.buffer[ix];
-            slf.diag(Diagnostic::BadCharacter(ix, ch));
+            slf.diag(Diagnostic::BadCharacter(slf.line_number, ix, ch));
             // Restart the function from the beginning to reload self.buffer;
             // doing it this way lets it be kept in a register in the common
             // case
@@ -957,6 +970,7 @@ impl<'a> Scanner<'a> {
 
         let len = self.buffer.len();
         let mut ix = self.position as usize;
+        let mut ln = self.line_number;
 
         while ix < len && self.buffer[ix] <= 32 {
             // For the purpose of error recovery, we consider C0 control
@@ -965,6 +979,7 @@ impl<'a> Scanner<'a> {
                 self.position = (ix + 1) as FilePos;
                 return badchar(self, ix);
             }
+            ln += if self.buffer[ix] == b'\n' { 1 } else { 0 };
             ix += 1;
         }
 
@@ -985,14 +1000,16 @@ impl<'a> Scanner<'a> {
                 return badchar(self, badix);
             }
 
+            ln += if self.buffer[ix] == b'\n' { 1 } else { 0 };
             ix += 1;
         }
 
         self.position = ix as FilePos;
+        self.line_number = ln;
         if start == ix {
             Span::NULL
         } else {
-            Span::new(start, ix)
+            Span::new(ln, start, ix)
         }
     }
 
@@ -1045,7 +1062,11 @@ impl<'a> Scanner<'a> {
             first = false;
         }
 
-        let cspan = Span::new2(opener.start, self.buffer.len() as FilePos);
+        let cspan = Span::new2(
+            opener.line_number,
+            opener.start,
+            self.buffer.len() as FilePos,
+        );
         self.diag(Diagnostic::UnclosedComment(cspan));
         ctype
     }
@@ -1083,6 +1104,7 @@ impl<'a> Scanner<'a> {
             group: NO_STATEMENT,
             group_end: NO_STATEMENT,
             span: Span::new2(
+                label.line_number,
                 mem::replace(&mut self.statement_start, self.position),
                 self.position,
             ),
@@ -1106,7 +1128,12 @@ impl<'a> Scanner<'a> {
                     CommentType::Extra => AdditionalInfoComment,
                     CommentType::Normal => Comment,
                 };
-                return Some(self.out_statement(s_type, Span::new2(ftok.start, ftok.start)));
+                return Some(
+                    self.out_statement(
+                        s_type,
+                        Span::new2(ftok.line_number, ftok.start, ftok.start),
+                    ),
+                );
             }
             self.unget = ftok;
         }
@@ -1146,7 +1173,7 @@ impl<'a> Scanner<'a> {
 
         // If this is a valid no-label statement, kwtok will have the keyword.
         // Otherwise it may be Span(0,0) = null, in which case we also return Span(0,0).
-        Span::new2(kwtok.start, kwtok.start)
+        Span::new2(kwtok.line_number, kwtok.start, kwtok.start)
     }
 
     /// We now know we need exactly one label.  Error and invalidate if we don't
@@ -1538,7 +1565,7 @@ fn collect_definitions(seg: &mut Segment) {
                     level,
                 });
             }
-            AdditionalInfoComment => match commands(buf, stmt.span.start) {
+            AdditionalInfoComment => match commands(buf, stmt.span) {
                 Ok(commands) => {
                     for command in commands {
                         seg.commands.push((index, command));
@@ -1598,10 +1625,11 @@ fn get_heading_name(buffer: &[u8], pos: FilePos) -> TokenPtr<'_> {
 }
 
 /// Extract the parser commands out of a $j "additional information" comment
-fn commands(buffer: &[u8], pos: FilePos) -> Result<CommandIter<'_>, Diagnostic> {
+fn commands(buffer: &[u8], span: Span) -> Result<CommandIter<'_>, Diagnostic> {
     let mut iter = CommandIter {
+        line_number: span.line_number,
         buffer,
-        index: pos as usize,
+        index: span.start as usize,
     };
     iter.skip_white_spaces();
     iter.expect(b'$')?;
@@ -1614,6 +1642,7 @@ fn commands(buffer: &[u8], pos: FilePos) -> Result<CommandIter<'_>, Diagnostic> 
 
 struct CommandIter<'a> {
     buffer: &'a [u8],
+    line_number: usize,
     index: usize,
 }
 
@@ -1638,10 +1667,18 @@ impl CommandIter<'_> {
     #[allow(clippy::if_not_else)]
     fn expect(&mut self, c: u8) -> Result<(), Diagnostic> {
         if !self.has_more() {
-            let cspan = Span::new2(self.index as u32, self.buffer.len() as FilePos);
+            let cspan = Span::new2(
+                self.line_number,
+                self.index as u32,
+                self.buffer.len() as FilePos,
+            );
             Err(Diagnostic::UnclosedComment(cspan))
         } else if self.next_char() != c {
-            let cspan = Span::new2(self.index as u32, self.buffer.len() as FilePos);
+            let cspan = Span::new2(
+                self.line_number,
+                self.index as u32,
+                self.buffer.len() as FilePos,
+            );
             Err(Diagnostic::MalformedAdditionalInfo(cspan))
         } else {
             self.index += 1;
@@ -1757,6 +1794,7 @@ pub fn parse_segments(input: &BufferRef) -> Vec<Arc<Segment>> {
     let mut scanner = Scanner {
         buffer_ref: input.clone(),
         buffer: input,
+        line_number: 1,
         ..Scanner::default()
     };
     assert!(input.len() < FilePos::max_value() as usize);
