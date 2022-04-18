@@ -120,6 +120,7 @@ use crate::statement::StatementAddress;
 use crate::typesetting::TypesettingData;
 use crate::verify;
 use crate::verify::VerifyResult;
+use crate::Span;
 use crate::StatementRef;
 use annotate_snippets::snippet::Snippet;
 use std::cmp::Ordering;
@@ -722,6 +723,17 @@ impl Database {
     #[must_use]
     pub fn statement_source_name(&self, addr: StatementAddress) -> &str {
         &self.parse_result().source_info(addr.segment_id).name
+    }
+
+    /// The global span of this statement, that is, within the complete source buffer.
+    #[must_use]
+    pub fn statement_span(&self, sref: StatementRef<'_>) -> Span {
+        let offset = &self.parse_result().source_info(sref.segment.id).span.start;
+        let span = sref.span();
+        Span {
+            start: span.start + offset,
+            end: span.end + offset,
+        }
     }
 
     /// Iterates over all the statements
