@@ -9,6 +9,7 @@ use crate::nameck::Nameset;
 use crate::statement::SegmentId;
 use crate::statement::StatementAddress;
 use crate::Span;
+use crate::Symbol;
 
 macro_rules! sa {
     ($id: expr, $index:expr) => {
@@ -90,7 +91,7 @@ fn test_db_formula() {
     }
 }
 
-fn make_tok(t: &[u8], names: &Arc<Nameset>) -> FormulaToken {
+fn make_tok(t: &[u8], names: &Arc<Nameset>) -> FormulaToken<Symbol> {
     FormulaToken {
         symbol: names.lookup_symbol(t).unwrap().atom,
         span: Span::default(),
@@ -116,7 +117,7 @@ fn test_parse_formula() {
             &mut fmla_vec.clone().into_iter(),
             &[wff, class],
             false,
-            &names,
+            &names as &Nameset,
         )
         .unwrap();
     // Accessing formula using paths to labels
@@ -162,10 +163,12 @@ fn test_parse_string() {
     let mut db = mkdb(GRAMMAR_DB);
     let names = db.name_pass().clone();
     let grammar = db.grammar_pass().clone();
-    let formula = grammar.parse_string("|- A = ( B + A )", &names).unwrap();
+    let formula = grammar
+        .parse_string("|- A = ( B + A )", &names as &Nameset)
+        .unwrap();
     assert_eq!(formula.as_ref(&db).as_sexpr(), "(weq cA (cadd cB cA))");
     let formula = grammar
-        .parse_string("|- A\n   = ( B + A )\n\n", &names)
+        .parse_string("|- A\n   = ( B + A )\n\n", &names as &Nameset)
         .unwrap();
     assert_eq!(formula.as_ref(&db).as_sexpr(), "(weq cA (cadd cB cA))");
 }
@@ -216,7 +219,7 @@ fn test_setvar_as_class() {
                 &mut vec![x_symbol].into_iter(),
                 &[class_symbol],
                 false,
-                &names,
+                &names as &Nameset,
             )
             .unwrap();
         assert_eq!(formula.as_ref(&db).as_sexpr(), "(cv vx)");

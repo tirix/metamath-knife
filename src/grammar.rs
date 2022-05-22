@@ -4,13 +4,14 @@
 // Possibly: Remove branch/leaf and keep only the optional leaf? (then final leaf = no next node id)
 
 use crate::diag::{Diagnostic, StmtParseError};
-use crate::formula::{Formula, FormulaBuilder, Label, Symbol, TypeCode};
+use crate::formula::{Formula, FormulaBuilder, Label, Symbol, TypeCode, LabelExt};
 use crate::nameck::{Atom, NameReader, Nameset};
 use crate::segment::Segment;
 use crate::segment_set::SegmentSet;
-use crate::statement::{CommandToken, SegmentId, StatementAddress, SymbolType, TokenRef};
+use crate::statement::{CommandToken, SegmentId, StatementAddress, SymbolType, TokenRef, TokenPtr};
 use crate::util::HashMap;
 use crate::{as_str, Database, Span, StatementRef, StatementType};
+use itertools::Either;
 use log::{debug, warn};
 use std::collections::hash_map::Entry;
 use std::fmt;
@@ -45,7 +46,7 @@ fn escape(str: &str) -> String {
 /// The grammar tree represents a Moore/Mealy Machine, where each node is a state of the automaton,
 /// and transitions are made between node based on the input tokens read from the math string to parse.
 #[derive(Debug)]
-struct GrammarTree(Vec<GrammarNode>);
+struct GrammarTree(Vec<GrammarNode<Label>>);
 
 impl GrammarTree {
     /// Create a new, empty branch node
@@ -57,18 +58,18 @@ impl GrammarTree {
     }
 
     /// Create a new leaf node, with the given [Reduce], and producing the given [Typecode]
-    fn create_leaf(&mut self, reduce: Reduce, typecode: TypeCode) -> NodeId {
+    fn create_leaf(&mut self, reduce: Reduce<Label>, typecode: TypeCode) -> NodeId {
         self.0.push(GrammarNode::Leaf { reduce, typecode });
         self.0.len() - 1
     }
 
     /// Retrieves a [`GrammarNode`] structure, given its [`NodeId`].
-    fn get(&self, node_id: NodeId) -> &GrammarNode {
+    fn get(&self, node_id: NodeId) -> &GrammarNode<Label> {
         &self.0[node_id]
     }
 
     /// Retrieves a mutable [`GrammarNode`] structure, given its [`NodeId`].
-    fn get_mut(&mut self, node_id: NodeId) -> &mut GrammarNode {
+    fn get_mut(&mut self, node_id: NodeId) -> &mut GrammarNode<Label> {
         &mut self.0[node_id]
     }
 
@@ -83,7 +84,7 @@ impl GrammarTree {
         &mut self,
         from_node_id: NodeId,
         to_node_id: NodeId,
-    ) -> (&GrammarNode, &mut GrammarNode) {
+    ) -> (&GrammarNode<Label>, &mut GrammarNode<Label>) {
         if from_node_id < to_node_id {
             let slice = &mut self.0[from_node_id..=to_node_id];
             let (first_part, second_part) = slice.split_at_mut(to_node_id - from_node_id);
@@ -100,7 +101,7 @@ impl GrammarTree {
         &mut self,
         copy_from_node_id: NodeId,
         copy_to_node_id: NodeId,
-        add_reduce: Reduce,
+        add_reduce: Reduce<Label>,
     ) -> Result<(), Diagnostic> {
         match self.get_two_nodes_mut(copy_from_node_id, copy_to_node_id) {
             (
@@ -171,15 +172,15 @@ pub struct Grammar {
 /// - `var_count` is the number of variables this syntax axiom requires. This tells how many of the parse trees will be joined.
 /// - `offset` says how far in the stack of yet un-joined parse trees the reduce will join. The cases when this is non-zero are rare.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Reduce {
-    label: Label,
+struct Reduce<L> {
+    label: L,
     var_count: u8,
     offset: u8,
     is_variable: bool,
 }
 
-impl Reduce {
-    const fn new(label: Label, var_count: u8) -> Self {
+impl<L> Reduce<L> {
+    const fn new(label: L, var_count: u8) -> Self {
         Reduce {
             label,
             var_count,
@@ -188,7 +189,7 @@ impl Reduce {
         }
     }
 
-    const fn new_variable(label: Label) -> Self {
+    const fn new_variable(label: L) -> Self {
         Reduce {
             label,
             var_count: 0,
@@ -196,11 +197,20 @@ impl Reduce {
             is_variable: true,
         }
     }
+
+    fn convert(r: Reduce<Label>) -> Self where L: From<Label> {
+        Reduce {
+            label: r.label.into(),
+            var_count: r.var_count,
+            offset: r.offset,
+            is_variable: r.is_variable,
+        }
+    }
 }
 
 /// With the current implementation, up to 5 reduce steps can be done in a single transition.
 /// This limit is hard-coded here.
-type ReduceVec = ArrayVec<[Reduce; 5]>;
+type ReduceVec = ArrayVec<[Reduce<Label>; 5]>;
 
 /// Increments the offets of the `reduce`s in the given list.
 fn increment_offsets(rv: &mut ReduceVec) {
@@ -252,7 +262,7 @@ impl NextNode {
         }
     }
 
-    fn with_offset_reduce(&self, reduce: Reduce) -> Self {
+    fn with_offset_reduce(&self, reduce: Reduce<Label>) -> Self {
         let mut r = reduce;
         r.offset += 1;
         let mut leaf_label = self.leaf_label;
@@ -263,7 +273,7 @@ impl NextNode {
         }
     }
 
-    fn with_reduce(&self, reduce: Reduce) -> Self {
+    fn with_reduce(&self, reduce: Reduce<Label>) -> Self {
         let mut leaf_label = self.leaf_label;
         leaf_label.insert(0, reduce);
         NextNode {
@@ -286,9 +296,9 @@ impl NextNode {
 
 #[derive(Clone, Debug)]
 #[allow(variant_size_differences)]
-enum GrammarNode {
+enum GrammarNode<L> {
     Leaf {
-        reduce: Reduce,
+        reduce: Reduce<L>,
         typecode: TypeCode,
     },
     Branch {
@@ -297,7 +307,7 @@ enum GrammarNode {
     },
 }
 
-impl GrammarNode {
+impl<L> GrammarNode<L> {
     /// Next node
     fn next_node(&self, symbol: Symbol, stype: SymbolType) -> Option<&NextNode> {
         match self {
@@ -307,7 +317,7 @@ impl GrammarNode {
     }
 }
 
-struct GrammarNodeRef<'a>(&'a GrammarNode, &'a Nameset);
+struct GrammarNodeRef<'a>(&'a GrammarNode<Label>, &'a Nameset);
 impl fmt::Debug for GrammarNodeRef<'_> {
     /// Lists the contents of the grammar node
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -466,16 +476,16 @@ impl Grammar {
         }
     }
 
-    fn too_short(
-        last_token: FormulaToken,
-        map: &HashMap<(SymbolType, Atom), NextNode>,
-        nset: &Nameset,
+    fn too_short<S: From<Symbol>, L>(
+        last_token: &FormulaToken<S>,
+        map: &HashMap<(SymbolType, Symbol), NextNode>,
+        rslv: &dyn Resolver<S, L>,
     ) -> StmtParseError {
         StmtParseError::ParsedStatementTooShort(
             last_token.span,
             map.keys()
                 .find(|k| k.0 == SymbolType::Constant)
-                .map(|(_, expected_symbol)| nset.atom_name(*expected_symbol).into()),
+                .map(|(_, expected_symbol)| rslv.symbol_token((*expected_symbol).into()).into()),
         )
     }
 
@@ -1160,19 +1170,68 @@ impl Grammar {
         }
         Ok(())
     }
+}
 
-    fn do_shift(&self, symbol_iter: &mut dyn Iterator<Item = FormulaToken>, nset: &Nameset) {
+/// An interface for resolving symbol and label names into identifiers, and vice-versa.
+pub trait Resolver<S, L> {
+    /// Gets the symbol with the given name
+    fn get_symbol(&self, name: &[u8]) -> Option<S>;
+
+    /// Gets the token for the given symbol
+    fn symbol_token(&self, symbol: S) -> TokenPtr<'_>;
+
+    /// Gets the name of the given symbol
+    fn symbol_name(&self, symbol: S) -> &str {
+        as_str(self.symbol_token(symbol))
+    }
+
+    /// Gets the label with the given name
+    fn get_label(&self, name: &[u8]) -> Option<L>;
+
+    /// Gets the name of the given label
+    fn label_name(&self, label: L) -> &str;
+
+    /// Gets the label representing a virtual "float" statement for the given variable symbol,
+    /// As well as the corresponding type code
+    fn label_for_symbol(&self, symbol: S) -> (L, TypeCode);
+}
+
+impl Resolver<Symbol, Label> for Nameset {
+    fn get_symbol(&self, name: &[u8]) -> Option<Symbol> {
+        Some(self.lookup_symbol(name)?.atom)
+    }
+
+    fn symbol_token(&self, symbol: Symbol) -> TokenPtr<'_> {
+        self.atom_name(symbol)
+    }
+
+    fn get_label(&self, name: &[u8]) -> Option<Label> {
+        Some(self.lookup_label(name)?.atom)
+    }
+
+    fn label_name(&self, label: Label) -> &str {
+        as_str(self.atom_name(label))
+    }
+
+    fn label_for_symbol(&self, _: Symbol) -> (Label, TypeCode) {
+        panic!("Symbols in regular formulas shall only be regular symbols");
+    }
+}
+
+impl Grammar {
+    fn do_shift<S, L>(&self, symbol_iter: &mut dyn Iterator<Item = FormulaToken<S>>, rslv: &impl Resolver<S, L>) {
         if let Some(token) = symbol_iter.next() {
             if self.debug {
-                debug!("   SHIFT {:?}", as_str(nset.atom_name(token.symbol)));
+                debug!("   SHIFT {:?}", rslv.symbol_name(token.symbol));
             }
         }
     }
 
-    fn do_reduce(formula_builder: &mut FormulaBuilder, reduce: Reduce, nset: &Nameset) {
-        debug!("   REDUCE {:?}", as_str(nset.atom_name(reduce.label)));
+    fn do_reduce<S, L: LabelExt + From<J>, J>(formula_builder: &mut FormulaBuilder<L>, reduce: Reduce<J>, rslv: &impl Resolver<S, L>) {
+        let reduce_label = reduce.label.into();
+        debug!("   REDUCE {:?}", rslv.label_name(reduce_label));
         formula_builder.reduce(
-            reduce.label,
+            reduce_label,
             reduce.var_count,
             reduce.offset,
             reduce.is_variable,
@@ -1180,20 +1239,20 @@ impl Grammar {
         //formula_builder.dump(nset);
         debug!(
             " {:?} {} {}",
-            as_str(nset.atom_name(reduce.label)),
+            rslv.label_name(reduce_label),
             reduce.var_count,
             reduce.offset
         );
     }
 
     /// Parses the given list of symbols into a formula syntax tree.
-    pub fn parse_formula(
+    pub fn parse_formula<S: Copy + From<Symbol>, L: LabelExt + From<Label>>(
         &self,
-        symbol_iter: &mut impl Iterator<Item = FormulaToken>,
+        symbol_iter: &mut impl Iterator<Item = FormulaToken<S>>,
         expected_typecodes: &[TypeCode],
         convert_to_provable: bool,
-        nset: &Nameset,
-    ) -> Result<Formula, StmtParseError> {
+        rslv: &impl Resolver<S, L>,
+    ) -> Result<Formula<L>, StmtParseError> where Symbol: TryFrom<S> {
         struct StackElement {
             node_id: NodeId,
             expected_typecodes: Box<[TypeCode]>,
@@ -1208,15 +1267,21 @@ impl Grammar {
             node_id: self.root,
             expected_typecodes: expected_typecodes.to_vec().into_boxed_slice(),
         };
+        let mut next_node: Either<&GrammarNode<Label>, (L, TypeCode)> = Either::Left(self.nodes.get(self.root));
         let mut stack = vec![];
         loop {
-            match *self.nodes.get(e.node_id) {
-                GrammarNode::Leaf {
+            let next: Either<(Reduce<L>, TypeCode), _> = match next_node {
+                Either::Left(GrammarNode::Leaf { reduce, typecode }) => Either::Left((Reduce::convert(*reduce), *typecode)),
+                Either::Right((label, typecode)) => Either::Left((Reduce::new_variable(label), typecode)),
+                Either::Left(GrammarNode::Branch { map }) => Either::Right(map),
+            };
+            match next {
+                Either::Left((
                     reduce,
                     mut typecode,
-                } => {
+                )) => {
                     // We found a leaf: REDUCE
-                    Self::do_reduce(&mut formula_builder, reduce, nset);
+                    Self::do_reduce(&mut formula_builder, reduce, rslv);
 
                     if e.expected_typecodes.contains(&typecode) {
                         // We found an expected typecode, pop from the stack and continue
@@ -1224,7 +1289,7 @@ impl Grammar {
                             e = popped;
                             debug!(
                                 " ++ Finished parsing formula, found typecode {:?}, back to {}",
-                                as_str(nset.atom_name(typecode)),
+                                rslv.symbol_name(typecode.into()),
                                 e.node_id
                             );
                             let map = self.get_branch(e.node_id);
@@ -1235,10 +1300,11 @@ impl Grammar {
                                 }) => {
                                     // Found a sub-formula: First optionally REDUCE and continue
                                     for &reduce in leaf_label {
-                                        Self::do_reduce(&mut formula_builder, reduce, nset);
+                                        Self::do_reduce(&mut formula_builder, reduce, rslv);
                                     }
 
                                     e.node_id = *next_node_id;
+                                    next_node = Either::Left(self.nodes.get(e.node_id));
                                     debug!("   Next Node: {:?}", e.node_id);
                                 }
                                 None => {
@@ -1257,9 +1323,10 @@ impl Grammar {
                                 .next_var_node(self.root, typecode)
                                 .ok_or(StmtParseError::UnparseableStatement(last_token.span))?;
                             for &reduce in leaf_label {
-                                Self::do_reduce(&mut formula_builder, reduce, nset);
+                                Self::do_reduce(&mut formula_builder, reduce, rslv);
                             }
                             e.node_id = next_node_id;
+                            next_node = Either::Left(self.nodes.get(e.node_id));
                         }
                     } else {
                         // We have parsed everything but did not obtain an expected typecode, try a type conversion.
@@ -1269,7 +1336,7 @@ impl Grammar {
                                     && e.expected_typecodes.contains(to_typecode)
                                 {
                                     let reduce = Reduce::new(*label, 1);
-                                    Self::do_reduce(&mut formula_builder, reduce, nset);
+                                    Self::do_reduce(&mut formula_builder, reduce, rslv);
                                     let typecode =
                                         if *to_typecode == self.logic_type && convert_to_provable {
                                             self.provable_type
@@ -1286,54 +1353,63 @@ impl Grammar {
                             .next_var_node(self.root, typecode)
                             .ok_or(StmtParseError::UnparseableStatement(last_token.span))?;
                         for &reduce in leaf_label {
-                            Self::do_reduce(&mut formula_builder, reduce, nset);
+                            Self::do_reduce(&mut formula_builder, reduce, rslv);
                         }
                         e.node_id = next_node_id;
+                        next_node = Either::Left(self.nodes.get(e.node_id));
                     }
                 }
-                GrammarNode::Branch { ref map } => {
+                Either::Right ( map ) => {
+                    // We found a branch
                     if let Some(&token) = symbol_enum.peek() {
                         last_token = token;
-                        debug!("   {:?}", as_str(nset.atom_name(token.symbol)));
+                        debug!("   {:?}", rslv.symbol_name(token.symbol));
 
-                        if let Some(NextNode {
-                            next_node_id,
-                            leaf_label,
-                        }) = map.get(&(SymbolType::Constant, token.symbol))
-                        {
-                            // Found an atom matching one of our next nodes: First optionally REDUCE and continue
-                            for &reduce in leaf_label {
-                                Self::do_reduce(&mut formula_builder, reduce, nset);
+                        if let Ok(token_symbol) = token.symbol.try_into() {
+                            if let Some(NextNode {
+                                next_node_id,
+                                leaf_label,
+                            }) = map.get(&(SymbolType::Constant, token_symbol))
+                            {
+                                // Found an atom matching one of our next nodes: First optionally REDUCE and continue
+                                for &reduce in leaf_label {
+                                    Self::do_reduce(&mut formula_builder, reduce, rslv);
+                                }
+
+                                // Found an atom matching one of our next nodes: SHIFT, to the next node
+                                self.do_shift(&mut symbol_enum, rslv);
+                                e.node_id = *next_node_id;
+                                next_node = Either::Left(self.nodes.get(e.node_id));
+                                debug!("   Next Node: {:?}", e.node_id);
+                            } else {
+                                // No matching constant, search among variables
+                                if map.is_empty() || e.node_id == self.root {
+                                    return Err(StmtParseError::UnparseableStatement(token.span));
+                                }
+
+                                debug!(
+                                    " ++ Not in CST map, push stack element and expect {:?}",
+                                    map.keys()
+                                );
+                                stack.push(e);
+                                e = StackElement {
+                                    node_id: self.root,
+                                    expected_typecodes: map
+                                        .keys()
+                                        .filter_map(|k| match *k {
+                                            (SymbolType::Variable, typecode) => Some(typecode),
+                                            _ => None,
+                                        })
+                                        .collect(),
+                                };
+                                next_node = Either::Left(self.nodes.get(e.node_id));
                             }
-
-                            // Found an atom matching one of our next nodes: SHIFT, to the next node
-                            self.do_shift(&mut symbol_enum, nset);
-                            e.node_id = *next_node_id;
-                            debug!("   Next Node: {:?}", e.node_id);
                         } else {
-                            // No matching constant, search among variables
-                            if map.is_empty() || e.node_id == self.root {
-                                return Err(StmtParseError::UnparseableStatement(token.span));
-                            }
-
-                            debug!(
-                                " ++ Not in CST map, push stack element and expect {:?}",
-                                map.keys()
-                            );
-                            stack.push(e);
-                            e = StackElement {
-                                node_id: self.root,
-                                expected_typecodes: map
-                                    .keys()
-                                    .filter_map(|k| match *k {
-                                        (SymbolType::Variable, typecode) => Some(typecode),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                            };
+                            // The next symbol is not a regular symbol, resolve it and find a symbol with the same typecode
+                            next_node = Either::Right(rslv.label_for_symbol(token.symbol));
                         }
                     } else {
-                        return Err(Grammar::too_short(last_token, map, nset));
+                        return Err(Grammar::too_short(&last_token, map, rslv));
                     }
                 }
             }
@@ -1343,36 +1419,36 @@ impl Grammar {
 
 /// An Atom which remembers its position in the source, for error handling
 #[derive(Clone, Copy, Debug)]
-pub struct FormulaToken {
+pub struct FormulaToken<S> {
     /// The symbol's atom
-    pub symbol: Symbol,
+    pub symbol: S,
     /// The span of the original source string this token has been read from, used for error reporting.
     pub span: Span,
 }
 
 /// An iterator through the tokens of a string
-struct FormulaTokenIter<'a> {
+struct FormulaTokenIter<'a, S, L> {
     string: &'a str,
     chars: std::iter::Peekable<core::str::Chars<'a>>,
-    nset: &'a Arc<Nameset>,
+    rslv: &'a dyn Resolver<S, L>,
     last_pos: usize,
 }
 
-impl<'a> FormulaTokenIter<'a> {
+impl<'a, S, L> FormulaTokenIter<'a, S, L> {
     /// Builds a `FormulaTokenIter` from a string.
     /// Characters are expected to be ASCII
-    fn from_str(string: &'a str, nset: &'a Arc<Nameset>) -> Self {
+    fn from_str(string: &'a str, rslv: &'a dyn Resolver<S, L>) -> Self {
         Self {
             string,
             chars: string.chars().peekable(),
-            nset,
+            rslv,
             last_pos: 0,
         }
     }
 }
 
-impl Iterator for FormulaTokenIter<'_> {
-    type Item = Result<FormulaToken, StmtParseError>;
+impl<S, L> Iterator for FormulaTokenIter<'_, S, L> {
+    type Item = Result<FormulaToken<S>, StmtParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.last_pos >= self.string.len() {
@@ -1389,9 +1465,9 @@ impl Iterator for FormulaTokenIter<'_> {
                 self.last_pos += 1;
             }
             let t = &self.string[span.start as usize..span.end as usize];
-            if let Some(l) = self.nset.lookup_symbol(t.as_bytes()) {
+            if let Some(symbol) = self.rslv.get_symbol(t.as_bytes()) {
                 Some(Ok(FormulaToken {
-                    symbol: l.atom,
+                    symbol,
                     span,
                 }))
             } else {
@@ -1405,28 +1481,29 @@ impl Grammar {
     /// Parses a character string into a formula
     /// As a first math token, the string is expected to contain the typecode for the formula.
     /// Diagnostics mark the errors with [Span]s based on the position in the input string.
-    pub fn parse_string(
+    pub fn parse_string<S: Copy + From<Symbol>, L: LabelExt + From<Label>>(
         &self,
         formula_string: &str,
-        nset: &Arc<Nameset>,
-    ) -> Result<Formula, StmtParseError> {
-        let mut symbols = FormulaTokenIter::from_str(formula_string, nset)
+        rslv: &impl Resolver<S, L>,
+    ) -> Result<Formula<L>, StmtParseError> where Symbol: TryFrom<S> {
+        let mut symbols = FormulaTokenIter::from_str(formula_string, rslv)
             .collect::<Result<Vec<_>, _>>()?
             .into_iter();
         let typecode = symbols
             .next()
             .ok_or(StmtParseError::ParsedStatementNoTypeCode)?;
-        let expected_typecode = if typecode.symbol == self.provable_type {
+        let typecode_symbol: Symbol = typecode.symbol.try_into().map_err(|_| StmtParseError::InvalidTypecode(typecode.span, rslv.symbol_token(typecode.symbol).into()))?;
+        let convert_to_provable = typecode_symbol == self.provable_type;
+        let expected_typecode = if convert_to_provable {
             self.logic_type
         } else {
-            typecode.symbol
+            typecode_symbol
         };
-        let convert_to_provable = typecode.symbol == self.provable_type;
         self.parse_formula(
             &mut symbols,
             &[expected_typecode],
             convert_to_provable,
-            nset,
+            rslv,
         )
     }
 
@@ -1435,7 +1512,7 @@ impl Grammar {
         sref: &StatementRef<'_>,
         nset: &Nameset,
         names: &mut NameReader<'_>,
-    ) -> Result<Option<Formula>, StmtParseError> {
+    ) -> Result<Option<Formula<Label>>, StmtParseError> {
         if sref.math_len() == 0 {
             return Err(StmtParseError::ParsedStatementNoTypeCode);
         }
@@ -1723,7 +1800,7 @@ impl StmtParse {
 
     /// Returns the formula for a given statement
     #[must_use]
-    pub fn get_formula(&self, sref: &StatementRef<'_>) -> Option<&Formula> {
+    pub fn get_formula(&self, sref: &StatementRef<'_>) -> Option<&Formula<Label>> {
         let stmt_parse_segment = self.segments.get(&sref.segment().id)?;
         stmt_parse_segment.formulas.get(&sref.address())
     }
@@ -1734,7 +1811,7 @@ impl StmtParse {
 struct StmtParseSegment {
     _source: Arc<Segment>,
     diagnostics: HashMap<StatementAddress, StmtParseError>,
-    formulas: HashMap<StatementAddress, Formula>,
+    formulas: HashMap<StatementAddress, Formula<Label>>,
 }
 
 /// Runs statement parsing for a single segment.

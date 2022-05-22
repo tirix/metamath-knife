@@ -816,7 +816,7 @@ impl Database {
     /// Returns the syntax proof tree for a given formula,
     /// in the form of a `ProofTreeArray`
     #[must_use]
-    pub fn get_syntax_proof_tree(&self, formula: &Formula) -> ProofTreeArray {
+    pub fn get_syntax_proof_tree(&self, formula: &Formula<Label>) -> ProofTreeArray {
         let mut arr = ProofTreeArray::default();
         formula
             .as_ref(self)

@@ -1083,7 +1083,7 @@ impl Frame {
 
 impl<'a> FrameRef<'a> {
     /// Iterates over the essential hypotheses for this frame.
-    pub fn essentials(self) -> impl Iterator<Item = (Label, &'a Formula)> {
+    pub fn essentials(self) -> impl Iterator<Item = (Label, &'a Formula<Label>)> {
         let FrameRef { db, frame } = self;
         frame.hypotheses.iter().filter_map(move |hyp| {
             if let Hyp::Essential(sa, _) = hyp {

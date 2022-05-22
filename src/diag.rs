@@ -1190,6 +1190,7 @@ impl Diagnostic {
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[allow(missing_docs)]
 pub enum StmtParseError {
+    InvalidTypecode(Span, Token),
     ParsedStatementTooShort(Span, Option<Token>),
     ParsedStatementNoTypeCode,
     ParsedStatementWrongTypeCode(Token),
@@ -1202,6 +1203,7 @@ impl StmtParseError {
     #[must_use]
     pub fn label<'a>(&self) -> Cow<'a, str> {
         match self {
+            StmtParseError::InvalidTypecode(_, _) => "Invalid Typecode",
             StmtParseError::ParsedStatementTooShort(_, _) => "Parsed statement too short",
             StmtParseError::ParsedStatementWrongTypeCode(_) => {
                 "Parsed statement has wrong typecode"
@@ -1226,6 +1228,16 @@ impl StmtParseError {
         }
         let severity = self.severity();
         let info = match self {
+            StmtParseError::InvalidTypecode(span, ref tok) => (
+                severity,
+                format!(
+                    "The typecode {typecode} is not a known symbol",
+                    typecode = t(tok)
+                )
+                .into(),
+                stmt,
+                *span,
+            ),
             StmtParseError::ParsedStatementTooShort(span, ref opt_tok) => (
                 severity,
                 match opt_tok {
