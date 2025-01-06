@@ -1094,11 +1094,11 @@ impl Grammar {
                             // syntax '|-' as 'wff';
                             self.provable_type = nset
                                 .lookup_symbol(&ty.value(buf))
-                                .ok_or((address, undefined_cmd(ty, buf)))?
+                                .ok_or_else(|| (address, undefined_cmd(ty, buf)))?
                                 .atom;
                             self.typecodes.push(
                                 nset.lookup_symbol(&code.value(buf))
-                                    .ok_or((address, undefined_cmd(code, buf)))?
+                                    .ok_or_else(|| (address, undefined_cmd(code, buf)))?
                                     .atom,
                             );
                         }
@@ -1107,7 +1107,7 @@ impl Grammar {
                                 // syntax 'setvar';
                                 self.typecodes.push(
                                     nset.lookup_symbol(&ty.value(buf))
-                                        .ok_or((address, undefined_cmd(ty, buf)))?
+                                        .ok_or_else(|| (address, undefined_cmd(ty, buf)))?
                                         .atom,
                                 );
                             }
@@ -1705,13 +1705,14 @@ impl StmtParse {
 
     /// Check that printing parsed statements gives back the original formulas
     // TODO(tirix): this could be parallelized
-    pub(crate) fn verify(&self, db: &Database) -> Result<(), (StatementAddress, Diagnostic)> {
+    pub(crate) fn verify(&self, db: &Database) -> Vec<(StatementAddress, Diagnostic)> {
         let sset = db.parse_result();
         let nset = db.name_result();
+        let mut diags = vec![];
         for sps in self.segments.values() {
             for (&sa, formula) in &sps.formulas {
                 let sref = sset.statement(sa);
-                let math_iter = sref.math_iter().flat_map(|token| {
+                let math_iter = sref.math_iter().skip(1).flat_map(|token| {
                     nset.lookup_symbol(token.slice)
                         .ok_or_else(|| {
                             (
@@ -1723,11 +1724,11 @@ impl StmtParse {
                 });
                 let fmla_iter = formula.as_ref(db).iter();
                 if math_iter.ne(fmla_iter) {
-                    return Err((sa, Diagnostic::FormulaVerificationFailed));
+                    diags.push((sa, Diagnostic::FormulaVerificationFailed));
                 }
             }
         }
-        Ok(())
+        diags
     }
 
     /// Writes down all formulas
@@ -1741,7 +1742,7 @@ impl StmtParse {
                 println!(
                     "{}: {}",
                     as_str(nset.statement_name(&sref)),
-                    formula.as_ref(db)
+                    formula.as_ref(db).as_sexpr()
                 );
             }
         }
