@@ -160,6 +160,8 @@ pub struct DbOptions {
     /// use it.  If this is false, any reparse will result in a full
     /// recalculation, so it is always safe but different settings will be
     /// faster for different tasks.
+    ///
+    /// Note that incremental mode is required for grammar parsing.
     pub incremental: bool,
     /// Number of jobs to run in parallel at any given time.
     pub jobs: usize,
@@ -413,13 +415,15 @@ impl Default for Database {
 }
 
 pub(crate) fn time<R, F: FnOnce() -> R>(opts: &DbOptions, name: &str, f: F) -> R {
-    let now = Instant::now();
-    let ret = f();
     if opts.timing {
+        let now = Instant::now();
+        let ret = f();
         // no as_msecs :(
         println!("{} {}ms", name, (now.elapsed() * 1000).as_secs());
+        ret
+    } else {
+        f()
     }
-    ret
 }
 
 impl Drop for Database {
@@ -712,6 +716,10 @@ impl Database {
 
     /// Builds and returns the grammar.
     pub fn grammar_pass(&mut self) -> &Arc<Grammar> {
+        assert!(
+            self.options.incremental,
+            "The database needs to be parsed with incremental mode for grammar parsing."
+        );
         if self.grammar.is_none() {
             self.name_pass();
             self.scope_pass();
