@@ -578,6 +578,13 @@ impl<'a> StatementRef<'a> {
         self.label_span().as_ref(&self.segment.segment.buffer)
     }
 
+    /// Obtain a span's text.
+    #[inline]
+    #[must_use]
+    pub fn span_text(&self, span: &Span) -> &'a [u8] {
+        span.as_ref(&self.segment.segment.buffer)
+    }
+
     /// An iterator for the symbols in a statement's math string.
     #[must_use]
     pub fn math_iter(&self) -> TokenIter<'a> {

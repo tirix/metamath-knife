@@ -218,7 +218,8 @@ impl Database {
                                 }
                             }
                             Parenthetical::RevisedBy { author, date }
-                            | Parenthetical::ProofShortenedBy { author, date } => {
+                            | Parenthetical::ProofShortenedBy { author, date }
+                            | Parenthetical::ProposedBy { author, date } => {
                                 check_paren(author, date);
                                 laters.push(sp)
                             }
